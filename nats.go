@@ -57,25 +57,38 @@ func (n *Nats) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	return nil
 }
 
-func (n *Nats) Provision(ctx caddy.Context) error {
-	n.logger = ctx.Logger(n)
-	nc, err := nats.Connect(n.Hosts, nats.UserCredentials(n.Creds), nats.Name(n.ConnectionName), nats.CustomInboxPrefix(n.InboxPrefix))
+func connectNats(host, creds, bucket, connectionName, inboxPrefix string) (nats.KeyValue, error) {
+	options := []nats.Option{nats.Name(connectionName), nats.CustomInboxPrefix(inboxPrefix)}
+	if creds != "" {
+		options = append(options, nats.UserCredentials(creds))
+	}
+
+	nc, err := nats.Connect(host, options...)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	js, err := nc.JetStream(nats.PublishAsyncMaxPending(256))
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	kv, err := js.KeyValue(n.Bucket)
+	return js.KeyValue(bucket)
+}
+
+func (n *Nats) Provision(ctx caddy.Context) error {
+	n.logger = ctx.Logger(n)
+
+	if n.InboxPrefix == "" {
+		n.InboxPrefix = "_INBOX"
+	}
+
+	kv, err := connectNats(n.Hosts, n.Creds, n.Bucket, n.ConnectionName, n.InboxPrefix)
 	if err != nil {
 		return err
 	}
 
 	n.Client = kv
-
 	return nil
 }
 
