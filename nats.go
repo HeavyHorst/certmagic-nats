@@ -31,6 +31,27 @@ func init() {
 	caddy.RegisterModule(Nats{})
 }
 
+// should be save to use as it is not allowed to be used in urls
+const replaceChar = "#"
+
+func normalizeNatsKey(key string) string {
+	if len(key) == 0 {
+		return key
+	}
+
+	key = strings.ReplaceAll(key, ".", replaceChar)
+	key = strings.ReplaceAll(key, "/", ".")
+	key = strings.ReplaceAll(key, replaceChar, "/")
+	return key
+}
+
+func denormalizeNatsKey(key string) string {
+	key = strings.ReplaceAll(key, "/", replaceChar)
+	key = strings.ReplaceAll(key, ".", "/")
+	key = strings.ReplaceAll(key, replaceChar, ".")
+	return key
+}
+
 func (n *Nats) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	for d.Next() {
 		var value string
@@ -101,6 +122,24 @@ func (Nats) CaddyModule() caddy.ModuleInfo {
 	}
 }
 
+func (n *Nats) getLatestRevision(key string) (uint64, error) {
+	watcher, err := n.Client.Watch(key, nats.MetaOnly())
+	if err != nil {
+		return 0, err
+	}
+	defer watcher.Stop()
+
+	var revision uint64
+	for rv := range watcher.Updates() {
+		if rv == nil {
+			break
+		}
+		revision = rv.Revision()
+	}
+
+	return revision, nil
+}
+
 // Lock acquires the lock for key, blocking until the lock
 // can be obtained or an error is returned. Note that, even
 // after acquiring a lock, an idempotent operation may have
@@ -124,31 +163,50 @@ func (n *Nats) Lock(ctx context.Context, key string) error {
 
 	// Check for existing lock
 	for {
-		l, err := n.Client.Get(key)
+		l, err := n.Client.Get(lockKey)
 		isErrNotExists := errors.Is(err, nats.ErrKeyNotFound)
 		if err != nil && !isErrNotExists {
 			return err
 		}
 
 		// if lock doesn't exist, break to create a new one
+		// get the correct revison for the specific key
 		if isErrNotExists {
+			if lastRevision != 0 {
+				// we waited for the lock to be released, and it was deleted (unlocked) in the meantime
+				// the delete operation increased the revision, so we need to increment it
+				lastRevision += 1
+			} else {
+				// we didn't wait for the lock to be released, so we need to get the latest revision
+				h, err := n.getLatestRevision(lockKey)
+				if err != nil && !errors.Is(err, nats.ErrKeyNotFound) {
+					return err
+				}
+				lastRevision = h
+			}
 			break
 		}
 
+		// Lock exists, check if expired and create a watcher on the key to wait for the lock to be released
 		lastRevision = l.Revision()
-
-		// Lock exists, check if expired or sleep 5 seconds and check again
-		//expires, err := time.Parse(time.RFC3339, string(l.Value()))
 		expires := time.Unix(0, int64(binary.LittleEndian.Uint64(l.Value())))
 		if time.Now().After(expires) {
+			// the lock expired and can be deleted
+			// break and try to create a new one
 			if err := n.Unlock(ctx, key); err != nil {
 				return err
 			}
 			break
 		}
 
+		watcher, err := n.Client.Watch(lockKey, nats.MetaOnly())
+		if err != nil {
+			return err
+		}
+
 		select {
-		case <-time.After(time.Duration(5 * time.Second)):
+		case <-watcher.Updates():
+			watcher.Stop()
 		case <-ctx.Done():
 			return ctx.Err()
 		}
@@ -157,15 +215,8 @@ func (n *Nats) Lock(ctx context.Context, key string) error {
 	// lock doesn't exist, create it
 	contents := make([]byte, 8)
 	binary.LittleEndian.PutUint64(contents, uint64(time.Now().Add(time.Duration(5*time.Minute)).UnixNano()))
-
-	if lastRevision > 0 {
-		_, err := n.Client.Update(lockKey, contents, lastRevision)
-		if err != nil {
-			return err
-		}
-	}
-
-	return n.Store(ctx, lockKey, contents)
+	_, err := n.Client.Update(lockKey, contents, lastRevision)
+	return err
 }
 
 // Unlock releases the lock for key. This method must ONLY be
@@ -174,18 +225,18 @@ func (n *Nats) Lock(ctx context.Context, key string) error {
 // out. Unlock cleans up any resources allocated during Lock.
 func (n *Nats) Unlock(ctx context.Context, key string) error {
 	lockKey := fmt.Sprintf("LOCK.%s", key)
-	return n.Delete(ctx, lockKey)
+	return n.Client.Delete(lockKey)
 }
 
 func (n *Nats) Store(ctx context.Context, key string, value []byte) error {
 	n.logger.Info(fmt.Sprintf("Store: %v, %v bytes", key, len(value)))
-	_, err := n.Client.Put(key, value)
+	_, err := n.Client.Put(normalizeNatsKey(key), value)
 	return err
 }
 
 func (n *Nats) Load(ctx context.Context, key string) ([]byte, error) {
 	n.logger.Info(fmt.Sprintf("Load: %v", key))
-	k, err := n.Client.Get(key)
+	k, err := n.Client.Get(normalizeNatsKey(key))
 	if err != nil {
 		if err == nats.ErrKeyNotFound {
 			return nil, fs.ErrNotExist
@@ -199,30 +250,51 @@ func (n *Nats) Load(ctx context.Context, key string) ([]byte, error) {
 
 func (n *Nats) Delete(ctx context.Context, key string) error {
 	n.logger.Info(fmt.Sprintf("Delete: %v", key))
-	return n.Client.Delete(key)
+	return n.Client.Delete(normalizeNatsKey(key))
 }
 
 func (n *Nats) Exists(ctx context.Context, key string) bool {
 	n.logger.Info(fmt.Sprintf("Exists: %v", key))
-	_, err := n.Client.Get(key)
+	_, err := n.Client.Get(normalizeNatsKey(key))
 	return err == nil
 }
 
 func (n *Nats) List(ctx context.Context, prefix string, recursive bool) ([]string, error) {
-	var keys []string
+	f := func() ([]string, error) {
+		prefix := normalizeNatsKey(prefix)
 
-	k, err := n.Client.Keys()
-	if err != nil {
-		return keys, err
-	}
-
-	for _, v := range k {
-		if strings.HasPrefix(v, prefix) {
-			keys = append(keys, v)
+		if len(prefix) > 1 && prefix[len(prefix)-1] != '.' {
+			prefix += "."
 		}
+
+		if recursive {
+			prefix += ">"
+		} else {
+			prefix += "*"
+		}
+
+		watcher, err := n.Client.Watch(prefix, nats.IgnoreDeletes(), nats.MetaOnly())
+		if err != nil {
+			return nil, err
+		}
+		defer watcher.Stop()
+
+		var keys []string
+		for entry := range watcher.Updates() {
+			if entry == nil {
+				break
+			}
+			keys = append(keys, entry.Key())
+		}
+
+		for k := range keys {
+			keys[k] = denormalizeNatsKey(keys[k])
+		}
+
+		return keys, nil
 	}
 
-	return keys, nil
+	return f()
 }
 
 func (n *Nats) Stat(ctx context.Context, key string) (certmagic.KeyInfo, error) {
