@@ -3,10 +3,11 @@ package certmagic_nats
 import (
 	"context"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"io/fs"
+	"math/rand"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/caddyserver/caddy/v2"
@@ -25,6 +26,9 @@ type Nats struct {
 	Creds          string `json:"creds"`
 	InboxPrefix    string `json:"inbox_prefix"`
 	ConnectionName string `json:"connection_name"`
+
+	revMap  map[string]uint64
+	maplock sync.Mutex
 }
 
 func init() {
@@ -109,6 +113,8 @@ func (n *Nats) Provision(ctx caddy.Context) error {
 		return err
 	}
 
+	n.revMap = make(map[string]uint64)
+
 	n.Client = kv
 	return nil
 }
@@ -122,22 +128,34 @@ func (Nats) CaddyModule() caddy.ModuleInfo {
 	}
 }
 
-func (n *Nats) getLatestRevision(key string) (uint64, error) {
-	watcher, err := n.Client.Watch(key, nats.MetaOnly())
+func (n *Nats) getLatestRevision(key string) (nats.KeyValueEntry, error) {
+	watcher, err := n.Client.Watch(key)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	defer watcher.Stop()
 
-	var revision uint64
+	var revision nats.KeyValueEntry
 	for rv := range watcher.Updates() {
 		if rv == nil {
 			break
 		}
-		revision = rv.Revision()
+		revision = rv
 	}
 
 	return revision, nil
+}
+
+func (n *Nats) setRev(key string, value uint64) {
+	n.maplock.Lock()
+	defer n.maplock.Unlock()
+	n.revMap[key] = value
+}
+
+func (n *Nats) getRev(key string) uint64 {
+	n.maplock.Lock()
+	defer n.maplock.Unlock()
+	return n.revMap[key]
 }
 
 // Lock acquires the lock for key, blocking until the lock
@@ -161,35 +179,25 @@ func (n *Nats) Lock(ctx context.Context, key string) error {
 	lockKey := fmt.Sprintf("LOCK.%s", key)
 	var lastRevision uint64
 
-	// Check for existing lock
+loop:
 	for {
-		l, err := n.Client.Get(lockKey)
-		isErrNotExists := errors.Is(err, nats.ErrKeyNotFound)
-		if err != nil && !isErrNotExists {
+		// Check for existing lock
+		revision, err := n.getLatestRevision(lockKey)
+		if err != nil {
 			return err
 		}
 
-		// if lock doesn't exist, break to create a new one
-		// get the correct revison for the specific key
-		if isErrNotExists {
-			if lastRevision != 0 {
-				// we waited for the lock to be released, and it was deleted (unlocked) in the meantime
-				// the delete operation increased the revision, so we need to increment it
-				lastRevision += 1
-			} else {
-				// we didn't wait for the lock to be released, so we need to get the latest revision
-				h, err := n.getLatestRevision(lockKey)
-				if err != nil && !errors.Is(err, nats.ErrKeyNotFound) {
-					return err
-				}
-				lastRevision = h
-			}
+		if revision != nil {
+			//fmt.Println(revision.Revision(), revision.Operation(), revision.Value())
+			lastRevision = revision.Revision()
+		}
+
+		if revision == nil || revision.Operation() == nats.KeyValueDelete || revision.Operation() == nats.KeyValuePurge {
 			break
 		}
 
-		// Lock exists, check if expired and create a watcher on the key to wait for the lock to be released
-		lastRevision = l.Revision()
-		expires := time.Unix(0, int64(binary.LittleEndian.Uint64(l.Value())))
+		expires := time.Unix(0, int64(binary.LittleEndian.Uint64(revision.Value())))
+		// Lock exists, check if expired
 		if time.Now().After(expires) {
 			// the lock expired and can be deleted
 			// break and try to create a new one
@@ -199,14 +207,9 @@ func (n *Nats) Lock(ctx context.Context, key string) error {
 			break
 		}
 
-		watcher, err := n.Client.Watch(lockKey, nats.MetaOnly())
-		if err != nil {
-			return err
-		}
-
 		select {
-		case <-watcher.Updates():
-			watcher.Stop()
+		// retry after a short period of time
+		case <-time.After(time.Duration(50+rand.Float64()*(200-50+1)) * time.Millisecond):
 		case <-ctx.Done():
 			return ctx.Err()
 		}
@@ -215,8 +218,19 @@ func (n *Nats) Lock(ctx context.Context, key string) error {
 	// lock doesn't exist, create it
 	contents := make([]byte, 8)
 	binary.LittleEndian.PutUint64(contents, uint64(time.Now().Add(time.Duration(5*time.Minute)).UnixNano()))
-	_, err := n.Client.Update(lockKey, contents, lastRevision)
-	return err
+	nrev, err := n.Client.Update(lockKey, contents, lastRevision)
+	if err != nil && strings.Contains(err.Error(), "wrong last sequence") {
+		// another process created the lock in the meantime
+		// try again
+		goto loop
+	}
+
+	if err != nil {
+		return err
+	}
+
+	n.setRev(lockKey, nrev)
+	return nil
 }
 
 // Unlock releases the lock for key. This method must ONLY be
@@ -225,7 +239,8 @@ func (n *Nats) Lock(ctx context.Context, key string) error {
 // out. Unlock cleans up any resources allocated during Lock.
 func (n *Nats) Unlock(ctx context.Context, key string) error {
 	lockKey := fmt.Sprintf("LOCK.%s", key)
-	return n.Client.Delete(lockKey)
+	//return n.Client.Delete(lockKey)
+	return n.Client.Delete(lockKey, nats.LastRevision(n.getRev(lockKey)))
 }
 
 func (n *Nats) Store(ctx context.Context, key string, value []byte) error {

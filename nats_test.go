@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"fmt"
 	"io/fs"
 	"path"
 	"reflect"
@@ -307,6 +308,28 @@ func TestNats_MultipleLocks(t *testing.T) {
 	}
 
 	n3.Unlock(context.Background(), lockKey)
+
+	wg := sync.WaitGroup{}
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func(i int) {
+			//<-time.After(time.Duration(200+mrand.Float64()*(2000-200+1)) * time.Millisecond)
+			defer wg.Done()
+			n := getNatsClient("basic")
+			n.ConnectionName = fmt.Sprintf("nats-%d", i)
+
+			err = n.Lock(context.Background(), lockKey)
+			if err != nil {
+				t.Errorf("Lock() %s error = %v: %d", n.ConnectionName, err, n.getRev("LOCK."+lockKey))
+			}
+
+			err = n.Unlock(context.Background(), lockKey)
+			if err != nil {
+				t.Errorf("Unlock() %s error = %v: %d", n.ConnectionName, err, n.getRev("LOCK."+lockKey))
+			}
+		}(i)
+	}
+	wg.Wait()
 }
 
 func FuzzNormalize(f *testing.F) {
@@ -319,13 +342,13 @@ func FuzzNormalize(f *testing.F) {
 			return
 		}
 
-		rev := normalizeNatsKey(orig)
-		doubleRev := denormalizeNatsKey(rev)
-		if orig != doubleRev {
-			t.Errorf("Before: %q, after: %q", orig, doubleRev)
+		norm := normalizeNatsKey(orig)
+		denorm := denormalizeNatsKey(norm)
+		if orig != denorm {
+			t.Errorf("Before: %q, after: %q", orig, denorm)
 		}
-		if utf8.ValidString(orig) && !utf8.ValidString(rev) {
-			t.Errorf("Reverse produced invalid UTF-8 string %q", rev)
+		if utf8.ValidString(orig) && !utf8.ValidString(norm) {
+			t.Errorf("Reverse produced invalid UTF-8 string %q", norm)
 		}
 	})
 }
