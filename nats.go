@@ -275,41 +275,38 @@ func (n *Nats) Exists(ctx context.Context, key string) bool {
 }
 
 func (n *Nats) List(ctx context.Context, prefix string, recursive bool) ([]string, error) {
-	f := func() ([]string, error) {
-		prefix := normalizeNatsKey(prefix)
+	prefix = normalizeNatsKey(prefix)
 
-		if len(prefix) > 1 && prefix[len(prefix)-1] != '.' {
-			prefix += "."
-		}
-
-		if recursive {
-			prefix += ">"
-		} else {
-			prefix += "*"
-		}
-
-		watcher, err := n.Client.Watch(prefix, nats.IgnoreDeletes(), nats.MetaOnly())
-		if err != nil {
-			return nil, err
-		}
-		defer watcher.Stop()
-
-		var keys []string
-		for entry := range watcher.Updates() {
-			if entry == nil {
-				break
-			}
-			keys = append(keys, entry.Key())
-		}
-
-		for k := range keys {
-			keys[k] = denormalizeNatsKey(keys[k])
-		}
-
-		return keys, nil
+	if len(prefix) > 1 && prefix[len(prefix)-1] != '.' {
+		prefix += "."
 	}
 
-	return f()
+	if recursive {
+		prefix += ">"
+	} else {
+		prefix += "*"
+	}
+
+	watcher, err := n.Client.Watch(prefix, nats.IgnoreDeletes(), nats.MetaOnly())
+	if err != nil {
+		return nil, err
+	}
+	defer watcher.Stop()
+
+	var keys []string
+	for entry := range watcher.Updates() {
+		if entry == nil {
+			break
+		}
+		keys = append(keys, entry.Key())
+	}
+
+	for k := range keys {
+		keys[k] = denormalizeNatsKey(keys[k])
+	}
+
+	return keys, nil
+
 }
 
 func (n *Nats) Stat(ctx context.Context, key string) (certmagic.KeyInfo, error) {
