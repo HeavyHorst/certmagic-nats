@@ -69,7 +69,7 @@ func startNatsServer() {
 		panic(err)
 	}
 
-	buckets := []string{"stat", "basic", "list"}
+	buckets := []string{"stat", "basic", "list", "listnr"}
 	for _, bucket := range buckets {
 		_, err = js.CreateKeyValue(&nats.KeyValueConfig{
 			Bucket:  bucket,
@@ -87,11 +87,11 @@ func getNatsClient(bucket string) *Nats {
 	startNatsServer()
 
 	n := &Nats{
-		logger: zap.NewNop(),
 		Hosts:  nats.DefaultURL,
 		Bucket: bucket,
 	}
 	n.Provision(caddy.Context{})
+	n.logger = zap.NewNop()
 	return n
 }
 
@@ -101,30 +101,55 @@ func TestNats_Stat(t *testing.T) {
 	data := make([]byte, 50)
 	rand.Read(data)
 
-	err := n.Store(context.Background(), "testStat1", data)
-	if err != nil {
-		t.Fatalf("Store() error = %v", err)
+	storeValues := []string{"testStat1", "testFolder/testStat2", "testFolder/testStat3"}
+	for _, sv := range storeValues {
+		err := n.Store(context.Background(), sv, data)
+		if err != nil {
+			t.Fatalf("Store() error = %v", err)
+		}
 	}
 
-	want := certmagic.KeyInfo{
-		Key:        "testStat1",
-		Size:       50,
-		IsTerminal: true,
+	testStat := func(key string, want certmagic.KeyInfo, wantErr error) {
+		got, err := n.Stat(context.Background(), key)
+		if err != wantErr {
+			t.Errorf("Stat() error = %v", err)
+		}
+
+		if got.IsTerminal {
+			if !reflect.DeepEqual(got.Modified, want) && time.Since(got.Modified) > time.Second {
+				t.Errorf("Modified time too old: %v", got.Modified)
+			}
+		}
+
+		got.Modified = time.Time{}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("Nats.Stat() = %v, want %v", got, want)
+		}
 	}
 
-	got, err := n.Stat(context.Background(), "testStat1")
-	if err != nil {
-		t.Errorf("Stat() error = %v", err)
-	}
+	key := "testStat1"
+	want := certmagic.KeyInfo{Key: key, Size: 50, IsTerminal: true}
+	testStat(key, want, nil)
 
-	if !reflect.DeepEqual(got.Modified, want) && time.Since(got.Modified) > time.Second {
-		t.Errorf("Modified time too old: %v", got.Modified)
-	}
+	key = "testFolder/testStat2"
+	want = certmagic.KeyInfo{Key: key, Size: 50, IsTerminal: true}
+	testStat(key, want, nil)
 
-	got.Modified = time.Time{}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("Nats.Stat() = %v, want %v", got, want)
-	}
+	key = "testFolder/testStat3"
+	want = certmagic.KeyInfo{Key: key, Size: 50, IsTerminal: true}
+	testStat(key, want, nil)
+
+	key = "testFolder"
+	want = certmagic.KeyInfo{Key: key, IsTerminal: false}
+	testStat(key, want, nil)
+
+	key = "testFolder/"
+	want = certmagic.KeyInfo{Key: "testFolder", IsTerminal: false}
+	testStat(key, want, nil)
+
+	key = "testFolder/testStat4"
+	want = certmagic.KeyInfo{}
+	testStat(key, want, fs.ErrNotExist)
 }
 
 func TestNats_StatKeyNotExists(t *testing.T) {
@@ -219,31 +244,46 @@ func TestNats_List(t *testing.T) {
 }
 
 func TestNats_ListNonRecursive(t *testing.T) {
-	n := getNatsClient("list")
+	n := getNatsClient("listnr")
 
-	crt, key, js, want := getTestData()
+	crt, key, js, owant := getTestData()
 
 	n.Store(context.Background(), crt, []byte("crt"))
 	n.Store(context.Background(), key, []byte("key"))
 	n.Store(context.Background(), js, []byte("meta"))
+	n.Store(context.Background(), path.Join("acme", "example.com", "sites2", "example.de"), []byte{})
+	n.Store(context.Background(), path.Join("acme", "example.com", "sites2", "example.com"), []byte{})
 
-	keys, err := n.List(context.TODO(), path.Join("acme", "example.com", "sites"), false)
-	if err != nil {
-		t.Fatalf("List() error = %v", err)
+	testList := func(prefix string, want []string) {
+		keys, err := n.List(context.Background(), prefix, false)
+		if err != nil {
+			t.Fatalf("List() error = %v", err)
+		}
+		sort.Strings(keys)
+		if !reflect.DeepEqual(keys, want) {
+			t.Errorf("List() got = %v, want %v", keys, want)
+		}
 	}
 
-	if len(keys) > 0 {
-		t.Errorf("List() got = %v, want empty", keys)
-	}
+	want := []string{"acme/example.com/sites2/example.com", "acme/example.com/sites2/example.de"}
+	prefix := path.Join("acme", "example.com", "sites2")
+	testList(prefix, want)
 
-	keys, err = n.List(context.TODO(), path.Join("acme", "example.com", "sites", "example.com"), false)
-	if err != nil {
-		t.Fatalf("List() error = %v", err)
-	}
-	sort.Strings(keys)
-	if !reflect.DeepEqual(keys, want) {
-		t.Errorf("List() got = %v, want %v", keys, want)
-	}
+	want = []string{"acme/example.com/sites", "acme/example.com/sites2"}
+	prefix = path.Join("acme", "example.com")
+	testList(prefix, want)
+
+	want = []string{"acme/example.com/sites/example.com"}
+	prefix = path.Join("acme", "example.com", "sites")
+	testList(prefix, want)
+
+	want = owant
+	prefix = path.Join("acme", "example.com", "sites", "example.com")
+	testList(prefix, want)
+
+	want = owant
+	prefix = path.Join("acme", "example.com", "sites", "example.com") + "/"
+	testList(prefix, want)
 }
 
 func TestNats_Exists(t *testing.T) {

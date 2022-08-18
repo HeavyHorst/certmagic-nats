@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"math/rand"
+	"path"
 	"strings"
 	"sync"
 	"time"
@@ -278,17 +279,14 @@ func (n *Nats) Exists(ctx context.Context, key string) bool {
 
 func (n *Nats) List(ctx context.Context, prefix string, recursive bool) ([]string, error) {
 	n.logger.Info(fmt.Sprintf("List: %v, %v", prefix, recursive))
+	oprefix := strings.TrimSuffix(prefix, "/")
 	prefix = normalizeNatsKey(prefix)
 
 	if len(prefix) > 1 && prefix[len(prefix)-1] != '.' {
 		prefix += "."
 	}
 
-	if recursive {
-		prefix += ">"
-	} else {
-		prefix += "*"
-	}
+	prefix += ">"
 
 	watcher, err := n.Client.Watch(prefix, nats.IgnoreDeletes(), nats.MetaOnly(), nats.Context(ctx))
 	if err != nil {
@@ -308,16 +306,54 @@ func (n *Nats) List(ctx context.Context, prefix string, recursive bool) ([]strin
 		keys[k] = denormalizeNatsKey(keys[k])
 	}
 
-	return keys, nil
+	if recursive {
+		return keys, nil
+	}
 
+	dirs := make(map[string]struct{})
+	for k := range keys {
+		paths := strings.Split(keys[k], "/")
+		var dir string
+		for i := range paths {
+			dir += paths[i]
+			if path.Dir(dir) == oprefix {
+				dirs[dir] = struct{}{}
+			}
+			dir += "/"
+		}
+	}
+
+	dkeys := make([]string, 0, len(dirs))
+	for k := range dirs {
+		dkeys = append(dkeys, k)
+	}
+
+	return dkeys, nil
 }
 
 func (n *Nats) Stat(ctx context.Context, key string) (certmagic.KeyInfo, error) {
 	n.logger.Info(fmt.Sprintf("Stat: %v", key))
 	var ki certmagic.KeyInfo
 
-	k, err := n.Client.Get(key)
-	if err != nil {
+	key = strings.TrimSuffix(key, "/")
+	nkey := normalizeNatsKey(key)
+	k, err := n.Client.Get(nkey)
+	if err == nats.ErrKeyNotFound {
+		entries, err := n.List(ctx, nkey, false)
+		if err != nil {
+			return ki, fs.ErrNotExist
+		}
+
+		// the key doesn't exists but has children
+		// so it's a directory
+		if len(entries) > 0 {
+			ki.IsTerminal = false
+			ki.Key = key
+			return ki, nil
+		}
+
+		return ki, fs.ErrNotExist
+	} else if err != nil {
 		return ki, fs.ErrNotExist
 	}
 
