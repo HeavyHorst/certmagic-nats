@@ -128,8 +128,8 @@ func (Nats) CaddyModule() caddy.ModuleInfo {
 	}
 }
 
-func (n *Nats) getLatestRevision(key string) (nats.KeyValueEntry, error) {
-	watcher, err := n.Client.Watch(key)
+func (n *Nats) getLatestRevision(ctx context.Context, key string) (nats.KeyValueEntry, error) {
+	watcher, err := n.Client.Watch(key, nats.Context(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -182,7 +182,7 @@ func (n *Nats) Lock(ctx context.Context, key string) error {
 loop:
 	for {
 		// Check for existing lock
-		revision, err := n.getLatestRevision(lockKey)
+		revision, err := n.getLatestRevision(ctx, lockKey)
 		if err != nil {
 			return err
 		}
@@ -287,7 +287,7 @@ func (n *Nats) List(ctx context.Context, prefix string, recursive bool) ([]strin
 		prefix += "*"
 	}
 
-	watcher, err := n.Client.Watch(prefix, nats.IgnoreDeletes(), nats.MetaOnly())
+	watcher, err := n.Client.Watch(prefix, nats.IgnoreDeletes(), nats.MetaOnly(), nats.Context(ctx))
 	if err != nil {
 		return nil, err
 	}
