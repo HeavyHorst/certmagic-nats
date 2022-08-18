@@ -176,6 +176,7 @@ func (n *Nats) getRev(key string) uint64 {
 // case Unlock is unable to be called due to some sort of network
 // failure or system crash.
 func (n *Nats) Lock(ctx context.Context, key string) error {
+	n.logger.Info(fmt.Sprintf("Lock: %v", key))
 	lockKey := fmt.Sprintf("LOCK.%s", key)
 	var lastRevision uint64
 
@@ -238,6 +239,7 @@ loop:
 // critical section is finished, even if it errored or timed
 // out. Unlock cleans up any resources allocated during Lock.
 func (n *Nats) Unlock(ctx context.Context, key string) error {
+	n.logger.Info(fmt.Sprintf("Unlock: %v", key))
 	lockKey := fmt.Sprintf("LOCK.%s", key)
 	//return n.Client.Delete(lockKey)
 	return n.Client.Delete(lockKey, nats.LastRevision(n.getRev(lockKey)))
@@ -275,6 +277,7 @@ func (n *Nats) Exists(ctx context.Context, key string) bool {
 }
 
 func (n *Nats) List(ctx context.Context, prefix string, recursive bool) ([]string, error) {
+	n.logger.Info(fmt.Sprintf("List: %v, %v", prefix, recursive))
 	prefix = normalizeNatsKey(prefix)
 
 	if len(prefix) > 1 && prefix[len(prefix)-1] != '.' {
