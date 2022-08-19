@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -350,9 +351,9 @@ func TestNats_MultipleLocks(t *testing.T) {
 
 	n3.Unlock(context.Background(), lockKey)
 
-	a := ""
+	tracker := int32(0)
 	wg := sync.WaitGroup{}
-	for i := 0; i < 100; i++ {
+	for i := 0; i < 500; i++ {
 		wg.Add(1)
 		go func(i int) {
 			//<-time.After(time.Duration(200+mrand.Float64()*(2000-200+1)) * time.Millisecond)
@@ -365,8 +366,14 @@ func TestNats_MultipleLocks(t *testing.T) {
 				t.Errorf("Lock() %s error = %v: %d", n.ConnectionName, err, n.getRev("LOCK."+lockKey))
 			}
 
-			// run with race detector
-			a += "a"
+			v := atomic.AddInt32(&tracker, 1)
+			if v != 1 {
+				panic("Had a concurrent lock")
+			}
+
+			// fmt.Printf("Worker %d has the lock (%v)\n", i, v)
+
+			atomic.AddInt32(&tracker, -1)
 
 			err = n.Unlock(context.Background(), lockKey)
 			if err != nil {
