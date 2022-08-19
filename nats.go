@@ -142,6 +142,10 @@ func (n *Nats) getRev(key string) uint64 {
 	return n.revMap[key]
 }
 
+func isWrongSequence(err error) bool {
+	return strings.Contains(err.Error(), "wrong last sequence")
+}
+
 // Lock acquires the lock for key, blocking until the lock
 // can be obtained or an error is returned. Note that, even
 // after acquiring a lock, an idempotent operation may have
@@ -180,7 +184,11 @@ loop:
 		if time.Now().After(expires) {
 			// the lock expired and can be deleted
 			// break and try to create a new one
-			if err := n.unlock(key, true); err != nil {
+			n.setRev(lockKey, revision.Revision())
+			if err := n.Unlock(ctx, key); err != nil {
+				if isWrongSequence(err) {
+					goto loop
+				}
 				return err
 			}
 			break
@@ -198,7 +206,7 @@ loop:
 	contents := make([]byte, 8)
 	binary.LittleEndian.PutUint64(contents, uint64(time.Now().Add(time.Duration(5*time.Minute)).UnixNano()))
 	nrev, err := n.Client.Create(lockKey, contents)
-	if err != nil && strings.Contains(err.Error(), "wrong last sequence") {
+	if err != nil && isWrongSequence(err) {
 		// another process created the lock in the meantime
 		// try again
 		goto loop
@@ -212,23 +220,14 @@ loop:
 	return nil
 }
 
-func (n *Nats) unlock(key string, force bool) error {
-	lockKey := fmt.Sprintf("LOCK.%s", key)
-
-	if force {
-		return n.Client.Delete(lockKey)
-	}
-
-	return n.Client.Delete(lockKey, nats.LastRevision(n.getRev(lockKey)))
-}
-
 // Unlock releases the lock for key. This method must ONLY be
 // called after a successful call to Lock, and only after the
 // critical section is finished, even if it errored or timed
 // out. Unlock cleans up any resources allocated during Lock.
 func (n *Nats) Unlock(ctx context.Context, key string) error {
 	n.logger.Info(fmt.Sprintf("Unlock: %v", key))
-	return n.unlock(key, false)
+	lockKey := fmt.Sprintf("LOCK.%s", key)
+	return n.Client.Delete(lockKey, nats.LastRevision(n.getRev(lockKey)))
 }
 
 func (n *Nats) Store(ctx context.Context, key string, value []byte) error {
