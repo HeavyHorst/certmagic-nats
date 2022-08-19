@@ -73,6 +73,7 @@ func startNatsServer() {
 	for _, bucket := range buckets {
 		_, err = js.CreateKeyValue(&nats.KeyValueConfig{
 			Bucket:  bucket,
+			History: 1,
 			Storage: nats.MemoryStorage,
 		})
 		if err != nil {
@@ -349,6 +350,7 @@ func TestNats_MultipleLocks(t *testing.T) {
 
 	n3.Unlock(context.Background(), lockKey)
 
+	a := ""
 	wg := sync.WaitGroup{}
 	for i := 0; i < 100; i++ {
 		wg.Add(1)
@@ -362,6 +364,9 @@ func TestNats_MultipleLocks(t *testing.T) {
 			if err != nil {
 				t.Errorf("Lock() %s error = %v: %d", n.ConnectionName, err, n.getRev("LOCK."+lockKey))
 			}
+
+			// run with race detector
+			a += "a"
 
 			err = n.Unlock(context.Background(), lockKey)
 			if err != nil {

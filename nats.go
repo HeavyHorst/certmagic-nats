@@ -3,6 +3,7 @@ package certmagic_nats
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io/fs"
 	"math/rand"
@@ -129,24 +130,6 @@ func (Nats) CaddyModule() caddy.ModuleInfo {
 	}
 }
 
-func (n *Nats) getLatestRevision(ctx context.Context, key string) (nats.KeyValueEntry, error) {
-	watcher, err := n.Client.Watch(key, nats.Context(ctx))
-	if err != nil {
-		return nil, err
-	}
-	defer watcher.Stop()
-
-	var revision nats.KeyValueEntry
-	for rv := range watcher.Updates() {
-		if rv == nil {
-			break
-		}
-		revision = rv
-	}
-
-	return revision, nil
-}
-
 func (n *Nats) setRev(key string, value uint64) {
 	n.maplock.Lock()
 	defer n.maplock.Unlock()
@@ -179,22 +162,16 @@ func (n *Nats) getRev(key string) uint64 {
 func (n *Nats) Lock(ctx context.Context, key string) error {
 	n.logger.Info(fmt.Sprintf("Lock: %v", key))
 	lockKey := fmt.Sprintf("LOCK.%s", key)
-	var lastRevision uint64
 
 loop:
 	for {
 		// Check for existing lock
-		revision, err := n.getLatestRevision(ctx, lockKey)
-		if err != nil {
+		revision, err := n.Client.Get(key)
+		if err != nil && !errors.Is(err, nats.ErrKeyNotFound) {
 			return err
 		}
 
-		if revision != nil {
-			//fmt.Println(revision.Revision(), revision.Operation(), revision.Value())
-			lastRevision = revision.Revision()
-		}
-
-		if revision == nil || revision.Operation() == nats.KeyValueDelete || revision.Operation() == nats.KeyValuePurge {
+		if revision == nil {
 			break
 		}
 
@@ -220,7 +197,7 @@ loop:
 	// lock doesn't exist, create it
 	contents := make([]byte, 8)
 	binary.LittleEndian.PutUint64(contents, uint64(time.Now().Add(time.Duration(5*time.Minute)).UnixNano()))
-	nrev, err := n.Client.Update(lockKey, contents, lastRevision)
+	nrev, err := n.Client.Create(lockKey, contents)
 	if err != nil && strings.Contains(err.Error(), "wrong last sequence") {
 		// another process created the lock in the meantime
 		// try again
