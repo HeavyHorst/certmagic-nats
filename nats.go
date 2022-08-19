@@ -180,7 +180,7 @@ loop:
 		if time.Now().After(expires) {
 			// the lock expired and can be deleted
 			// break and try to create a new one
-			if err := n.Unlock(ctx, key); err != nil {
+			if err := n.unlock(key, true); err != nil {
 				return err
 			}
 			break
@@ -212,15 +212,23 @@ loop:
 	return nil
 }
 
+func (n *Nats) unlock(key string, force bool) error {
+	lockKey := fmt.Sprintf("LOCK.%s", key)
+
+	if force {
+		return n.Client.Delete(lockKey)
+	}
+
+	return n.Client.Delete(lockKey, nats.LastRevision(n.getRev(lockKey)))
+}
+
 // Unlock releases the lock for key. This method must ONLY be
 // called after a successful call to Lock, and only after the
 // critical section is finished, even if it errored or timed
 // out. Unlock cleans up any resources allocated during Lock.
 func (n *Nats) Unlock(ctx context.Context, key string) error {
 	n.logger.Info(fmt.Sprintf("Unlock: %v", key))
-	lockKey := fmt.Sprintf("LOCK.%s", key)
-	//return n.Client.Delete(lockKey)
-	return n.Client.Delete(lockKey, nats.LastRevision(n.getRev(lockKey)))
+	return n.unlock(key, false)
 }
 
 func (n *Nats) Store(ctx context.Context, key string, value []byte) error {
