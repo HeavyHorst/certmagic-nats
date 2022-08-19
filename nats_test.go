@@ -358,7 +358,7 @@ func TestNats_MultipleLocks(t *testing.T) {
 			n := getNatsClient("basic")
 			n.ConnectionName = fmt.Sprintf("nats-%d", i)
 
-			err = n.Lock(context.Background(), lockKey)
+			err := n.Lock(context.Background(), lockKey)
 			if err != nil {
 				t.Errorf("Lock() %s error = %v: %d", n.ConnectionName, err, n.getRev("LOCK."+lockKey))
 			}
