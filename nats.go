@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/caddyserver/caddy/v2"
-	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/caddyserver/certmagic"
 	"github.com/nats-io/nats.go"
 	"go.uber.org/zap"
@@ -33,9 +32,11 @@ type Nats struct {
 	maplock sync.Mutex
 }
 
-func init() {
-	caddy.RegisterModule(Nats{})
-}
+var (
+	_ caddy.Provisioner = (*Nats)(nil)
+	_ certmagic.Storage = (*Nats)(nil)
+	_ certmagic.Locker  = (*Nats)(nil)
+)
 
 // should be save to use as it is not allowed to be used in urls
 const replaceChar = "#"
@@ -58,32 +59,6 @@ func denormalizeNatsKey(key string) string {
 	return key
 }
 
-func (n *Nats) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
-	for d.Next() {
-		var value string
-		key := d.Val()
-
-		if !d.Args(&value) {
-			continue
-		}
-
-		switch key {
-		case "hosts":
-			n.Hosts = value
-		case "bucket":
-			n.Bucket = value
-		case "creds":
-			n.Creds = value
-		case "inbox_prefix":
-			n.InboxPrefix = value
-		case "connection_name":
-			n.ConnectionName = value
-		}
-	}
-
-	return nil
-}
-
 func connectNats(host, creds, bucket, connectionName, inboxPrefix string) (nats.KeyValue, error) {
 	options := []nats.Option{nats.Name(connectionName), nats.CustomInboxPrefix(inboxPrefix)}
 	if creds != "" {
@@ -101,33 +76,6 @@ func connectNats(host, creds, bucket, connectionName, inboxPrefix string) (nats.
 	}
 
 	return js.KeyValue(bucket)
-}
-
-func (n *Nats) Provision(ctx caddy.Context) error {
-	n.logger = ctx.Logger(n)
-
-	if n.InboxPrefix == "" {
-		n.InboxPrefix = "_INBOX"
-	}
-
-	kv, err := connectNats(n.Hosts, n.Creds, n.Bucket, n.ConnectionName, n.InboxPrefix)
-	if err != nil {
-		return err
-	}
-
-	n.revMap = make(map[string]uint64)
-
-	n.Client = kv
-	return nil
-}
-
-func (Nats) CaddyModule() caddy.ModuleInfo {
-	return caddy.ModuleInfo{
-		ID: "caddy.storage.nats",
-		New: func() caddy.Module {
-			return &Nats{}
-		},
-	}
 }
 
 func (n *Nats) setRev(key string, value uint64) {
@@ -347,14 +295,3 @@ func (n *Nats) Stat(ctx context.Context, key string) (certmagic.KeyInfo, error) 
 	ki.IsTerminal = true
 	return ki, nil
 }
-
-// CertMagicStorage converts s to a certmagic.Storage instance.
-func (n *Nats) CertMagicStorage() (certmagic.Storage, error) {
-	return n, nil
-}
-
-var (
-	_ caddy.Provisioner      = (*Nats)(nil)
-	_ caddy.StorageConverter = (*Nats)(nil)
-	_ caddyfile.Unmarshaler  = (*Nats)(nil)
-)
