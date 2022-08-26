@@ -74,7 +74,7 @@ func startNatsServer() {
 	for _, bucket := range buckets {
 		_, err = js.CreateKeyValue(&nats.KeyValueConfig{
 			Bucket:  bucket,
-			History: 1,
+			History: 5,
 			Storage: nats.MemoryStorage,
 		})
 		if err != nil {

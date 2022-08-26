@@ -5,7 +5,7 @@ go 1.19
 require (
 	github.com/caddyserver/caddy/v2 v2.5.2
 	github.com/caddyserver/certmagic v0.16.2
-	github.com/nats-io/nats-server/v2 v2.8.5-0.20220817020041-c67d6aad79f1
+	github.com/nats-io/nats-server/v2 v2.8.5-0.20220825222520-97bba60bb5f7
 	github.com/nats-io/nats.go v1.16.1-0.20220816170848-b81c9e71b479
 	go.uber.org/zap v1.22.0
 )
@@ -42,11 +42,12 @@ require (
 	github.com/prometheus/procfs v0.8.0 // indirect
 	github.com/stretchr/testify v1.7.1 // indirect
 	go.uber.org/atomic v1.10.0 // indirect
+	go.uber.org/automaxprocs v1.5.1 // indirect
 	go.uber.org/multierr v1.8.0 // indirect
-	golang.org/x/crypto v0.0.0-20220722155217-630584e8d5aa // indirect
+	golang.org/x/crypto v0.0.0-20220826181053-bd7e27e6170d // indirect
 	golang.org/x/mod v0.6.0-dev.0.20220419223038-86c51ed26bb4 // indirect
 	golang.org/x/net v0.0.0-20220812174116-3211cb980234 // indirect
-	golang.org/x/sys v0.0.0-20220817070843-5a390386f1f2 // indirect
+	golang.org/x/sys v0.0.0-20220825204002-c680a09ffe64 // indirect
 	golang.org/x/term v0.0.0-20220722155259-a9ba230a4035 // indirect
 	golang.org/x/text v0.3.8-0.20211004125949-5bd84dd9b33b // indirect
 	golang.org/x/time v0.0.0-20220722155302-e5dcc9cfc0b9 // indirect
