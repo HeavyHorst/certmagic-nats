@@ -1,7 +1,7 @@
 
-# Certmagic Storage Backend for Nats KV
+# Certmagic Storage Backend for NATS KV
 
-This library allows you to use [Nats KV](https://docs.nats.io/nats-concepts/jetstream/key-value-store) as a key/certificate storage backend for [Certmagic](https://github.com/caddyserver/certmagic).             
+This library allows you to use [NATS KV](https://docs.nats.io/nats-concepts/jetstream/key-value-store) as a key/certificate storage backend for [Certmagic](https://github.com/caddyserver/certmagic).             
 
 ## Using it wit [Caddy](https://caddyserver.com/)
 
