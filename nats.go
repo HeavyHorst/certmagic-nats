@@ -220,8 +220,6 @@ func (n *Nats) List(ctx context.Context, prefix string, recursive bool) ([]strin
 
 	prefix += ">"
 
-	fmt.Println(prefix)
-
 	watcher, err := n.Client.Watch(prefix, nats.IgnoreDeletes(), nats.MetaOnly(), nats.Context(ctx))
 	if err != nil {
 		return nil, err
@@ -231,7 +229,6 @@ func (n *Nats) List(ctx context.Context, prefix string, recursive bool) ([]strin
 	var keys []string
 	for entry := range watcher.Updates() {
 		if entry == nil {
-			fmt.Println("WAAAAU")
 			break
 		}
 
